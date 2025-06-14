@@ -64,7 +64,6 @@ mtcnn, resnetv1, arcface_app, device = load_all_models()
 if 'initialized' not in st.session_state:
     st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names = load_known_face_data_from_file("facenet")
     st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names = load_known_face_data_from_file("arcface")
-    st.session_state.frame_buffer = [] # Tạo bộ đệm để lưu các frame video
     st.session_state.initialized = True
     st.sidebar.success("Tất cả các model và dữ liệu đã được tải.")
 
@@ -72,8 +71,8 @@ if 'initialized' not in st.session_state:
 class VideoTransformer(VideoTransformerBase):
     def __init__(self):
         self.threshold = 0.6
-        # Xóa bộ đệm cũ mỗi khi bắt đầu một luồng mới
-        st.session_state.frame_buffer.clear()
+        # SỬA LỖI: Khởi tạo bộ đệm tại đây một cách an toàn
+        st.session_state.frame_buffer = []
 
     def recv(self, frame):
         # Chuyển frame thành ảnh OpenCV
@@ -168,7 +167,7 @@ with tab2:
         )
 
         # Khối này sẽ chạy sau khi người dùng nhấn STOP
-        if not ctx.state.playing and len(st.session_state.frame_buffer) > 0:
+        if not ctx.state.playing and 'frame_buffer' in st.session_state and len(st.session_state.frame_buffer) > 0:
             st.subheader("Video đã ghi và phân tích")
             with st.spinner("Đang tạo file video..."):
                 # Lấy thuộc tính từ frame đầu tiên
