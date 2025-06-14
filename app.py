@@ -72,8 +72,9 @@ if 'initialized' not in st.session_state:
 # --- LỚP GHI HÌNH TỪ WEBCAM ---
 class VideoRecorder(VideoTransformerBase):
     def __init__(self):
-        # Xóa bộ đệm cũ mỗi khi bắt đầu một luồng mới
-        st.session_state.raw_frame_buffer.clear()
+        # SỬA LỖI: Luôn khởi tạo lại bộ đệm khi một phiên ghi hình mới bắt đầu.
+        # Điều này đảm bảo an toàn và xóa dữ liệu cũ.
+        st.session_state.raw_frame_buffer = deque()
 
     def recv(self, frame):
         # Chuyển frame thành ảnh OpenCV
