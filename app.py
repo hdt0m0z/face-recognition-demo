@@ -64,6 +64,7 @@ mtcnn, resnetv1, arcface_app, device = load_all_models()
 if 'initialized' not in st.session_state:
     st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names = load_known_face_data_from_file("facenet")
     st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names = load_known_face_data_from_file("arcface")
+    st.session_state.frame_buffer = [] # Tạo bộ đệm để lưu các frame video
     st.session_state.initialized = True
     st.sidebar.success("Tất cả các model và dữ liệu đã được tải.")
 
@@ -71,12 +72,15 @@ if 'initialized' not in st.session_state:
 class VideoTransformer(VideoTransformerBase):
     def __init__(self):
         self.threshold = 0.6
+        # Xóa bộ đệm cũ mỗi khi bắt đầu một luồng mới
+        st.session_state.frame_buffer.clear()
 
     def recv(self, frame):
+        # Chuyển frame thành ảnh OpenCV
         img = frame.to_ndarray(format="bgr24")
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # Xử lý với ResnetV1
+        # --- Xử lý với ResnetV1 (màu xanh lá) ---
         boxes, _ = mtcnn.detect(img_rgb)
         if boxes is not None:
             for box in boxes:
@@ -87,7 +91,7 @@ class VideoTransformer(VideoTransformerBase):
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(img, f'R: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Xử lý với ArcFace
+        # --- Xử lý với ArcFace (màu xanh dương) ---
         faces = arcface_app.get(img)
         if len(faces) > 0:
             for face in faces:
@@ -97,6 +101,10 @@ class VideoTransformer(VideoTransformerBase):
                 cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
                 cv2.putText(img, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
+        # Lưu frame đã xử lý vào bộ đệm
+        st.session_state.frame_buffer.append(img)
+        
+        # Trả về frame để hiển thị trực tiếp
         return img
 
 # --- GIAO DIỆN THANH BÊN (SIDEBAR) ---
@@ -121,6 +129,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 # --- TAB 1: SO SÁNH TỔNG QUAN ---
 with tab1:
+    # (Giữ nguyên nội dung tab 1)
     st.header("So sánh Hiệu suất và Kiến trúc")
     st.subheader("1. Bảng so sánh Kiến trúc")
     try:
@@ -145,20 +154,46 @@ with tab1:
 with tab2:
     st.header("Thử nghiệm Nhận diện")
     
-    demo_tab1, demo_tab2, demo_tab3 = st.tabs(["📸 Webcam Thời gian thực", "🖼️ Phân tích Ảnh", "🎬 Phân tích Video"])
+    demo_tab1, demo_tab2 = st.tabs(["📸 Webcam & Ghi hình", "🖼️ Phân tích Ảnh"])
 
-    # --- Demo qua Webcam Thời gian thực ---
+    # --- Demo qua Webcam & Ghi hình ---
     with demo_tab1:
-        st.info("Nhấn nút 'START' để bật webcam và xem kết quả nhận diện theo thời gian thực. Nhấn 'STOP' để dừng.")
-        webrtc_streamer(
+        st.info("Nhấn 'START' để bật webcam. Nhấn 'STOP' để dừng và tự động tạo video kết quả.")
+        
+        ctx = webrtc_streamer(
             key="realtime-recognition",
             video_transformer_factory=VideoTransformer,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
 
+        # Khối này sẽ chạy sau khi người dùng nhấn STOP
+        if not ctx.state.playing and len(st.session_state.frame_buffer) > 0:
+            st.subheader("Video đã ghi và phân tích")
+            with st.spinner("Đang tạo file video..."):
+                # Lấy thuộc tính từ frame đầu tiên
+                first_frame = st.session_state.frame_buffer[0]
+                h, w, _ = first_frame.shape
+                output_fps = 15.0  # FPS mặc định cho video đầu ra
+
+                # Lưu vào một file tạm thời
+                output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+                out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), output_fps, (w, h))
+                
+                for frame in st.session_state.frame_buffer:
+                    out.write(frame)
+                
+                out.release()
+                
+                # Hiển thị video và dọn dẹp
+                st.video(output_path)
+                os.unlink(output_path)
+                st.success("Video đã được xử lý và hiển thị ở trên.")
+                st.session_state.frame_buffer.clear() # Xóa bộ đệm sau khi đã xử lý
+
     # --- Demo qua Ảnh tải lên ---
     with demo_tab2:
+        # (Giữ nguyên nội dung phân tích ảnh)
         st.write("Tải lên một bức ảnh có chứa khuôn mặt để xem kết quả nhận diện từ cả hai mô hình.")
         uploaded_file = st.file_uploader("Chọn một file ảnh", type=["jpg", "jpeg", "png"], key="img_uploader")
         if uploaded_file is not None:
@@ -167,7 +202,6 @@ with tab2:
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             st.image(image, caption='Ảnh gốc', use_column_width=True)
             with st.spinner('Đang phân tích...'):
-                # (Logic xử lý ảnh giữ nguyên)
                 boxes, _ = mtcnn.detect(frame_rgb)
                 if boxes is not None:
                     for box in boxes:
@@ -187,70 +221,10 @@ with tab2:
                         cv2.putText(frame_bgr, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
             st.image(frame_bgr, caption='Kết quả Nhận diện', channels="BGR", use_column_width=True)
 
-    # --- Demo qua Video tải lên ---
-    with demo_tab3:
-        st.write("Tải lên một file video để xử lý và nhận diện khuôn mặt trong đó.")
-        uploaded_video = st.file_uploader("Chọn một file video", type=["mp4", "mov", "avi", "mkv"], key="video_uploader")
-
-        if uploaded_video is not None:
-            tfile = tempfile.NamedTemporaryFile(delete=False)
-            tfile.write(uploaded_video.read())
-            
-            cap = cv2.VideoCapture(tfile.name)
-            
-            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = int(cap.get(cv2.CAP_PROP_FPS))
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
-            out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
-            
-            st.success(f"Đã tải lên video. Bắt đầu xử lý {total_frames} frames...")
-            progress_bar = st.progress(0, text="Đang xử lý...")
-            
-            frame_count = 0
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # Áp dụng logic nhận diện cho từng frame
-                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                boxes, _ = mtcnn.detect(img_rgb)
-                if boxes is not None:
-                    for box in boxes:
-                        face_tensor = mtcnn.extract(img_rgb, [box], save_path=None).to(device)
-                        embedding = resnetv1(face_tensor).detach().cpu().numpy()[0]
-                        name, sim = recognize_face(embedding, st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names)
-                        x1, y1, x2, y2 = map(int, box)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, f'R: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                faces = arcface_app.get(frame)
-                if len(faces) > 0:
-                    for face in faces:
-                        arc_embedding = face.embedding
-                        name, sim = recognize_face(arc_embedding, st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names)
-                        x1, y1, x2, y2 = face.bbox.astype(int)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                        cv2.putText(frame, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                
-                out.write(frame)
-                frame_count += 1
-                progress_bar.progress(frame_count / total_frames, text=f"Đang xử lý frame {frame_count}/{total_frames}")
-
-            cap.release()
-            out.release()
-            os.unlink(tfile.name)
-            
-            progress_bar.empty()
-            st.success("Xử lý video hoàn tất!")
-            st.video(output_path)
-            os.unlink(output_path)
-
 
 # --- TAB 3: QUẢN LÝ DỮ LIỆU ---
 with tab3:
+    # (Giữ nguyên nội dung quản lý dữ liệu)
     st.header("Quản lý Cơ sở dữ liệu Khuôn mặt")
     col1, col2 = st.columns(2)
     with col1:
@@ -259,7 +233,6 @@ with tab3:
         add_uploaded_img = st.file_uploader("Tải ảnh khuôn mặt", type=["jpg", "jpeg", "png"], key="add_img_tab3")
         if st.button("➕ Thêm"):
             if add_uploaded_img and add_name.strip():
-                # (Logic thêm người giữ nguyên)
                 with st.spinner(f"Đang thêm {add_name}..."):
                     img = Image.open(add_uploaded_img).convert("RGB")
                     img_array = np.array(img)
@@ -295,7 +268,6 @@ with tab3:
             unique_names = sorted(list(np.unique(st.session_state.known_resnetv1_names)))
             to_delete = st.selectbox("Chọn tên để xoá", unique_names, key="delete_name", index=None, placeholder="Chọn một tên...")
             if st.button("❌ Xoá") and to_delete:
-                # (Logic xóa người giữ nguyên)
                 new_resnet_emb, new_resnet_names = [], []
                 new_arcface_emb, new_arcface_names = [], []
                 for i, name in enumerate(st.session_state.known_resnetv1_names):
@@ -319,8 +291,8 @@ with tab3:
 
 # --- TAB 4: GIỚI THIỆU DỰ ÁN ---
 with tab4:
+    # (Giữ nguyên nội dung giới thiệu)
     st.header("Mục tiêu và Phương pháp")
-    # (Giữ nguyên nội dung tab 3)
     st.markdown("""
     Dự án này được thực hiện trong khuôn khổ môn học Thị giác máy tính, nhằm mục đích so sánh hai mô hình nhận dạng khuôn mặt tiên tiến: **FaceNet (sử dụng kiến trúc InceptionResnetV1)** và **ArcFace (sử dụng mô hình buffalo_l)**.
 
