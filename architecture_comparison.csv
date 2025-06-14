@@ -1,0 +1,3 @@
+Model,Độ sâu mạng (ước tính),Số lượng tham số (Triệu),FLOPs (GFLOPs),Kích thước đầu vào
+FaceNet (ResnetV1),380,23.482624,1.425999712,160x160
+ArcFace (buffalo_l),100,25.6,5.2,112x112

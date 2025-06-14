@@ -1,0 +1,5 @@
+Dataset,FaceNet (ResnetV1) Accuracy (%),ArcFace (buffalo_l) Accuracy (%)
+LFW,99.3,99.8
+CFP-FP,95.5,98.37
+AgeDB-30,97.4,98.28
+IJB-C (TAR@FAR=1e-4),90.8,97.1
