@@ -10,6 +10,7 @@ import time
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
 import tempfile
 import io
+from collections import deque
 
 # --- CẤU HÌNH TRANG WEB ---
 st.set_page_config(
@@ -64,44 +65,22 @@ mtcnn, resnetv1, arcface_app, device = load_all_models()
 if 'initialized' not in st.session_state:
     st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names = load_known_face_data_from_file("facenet")
     st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names = load_known_face_data_from_file("arcface")
+    st.session_state.raw_frame_buffer = deque() # Sử dụng deque để lưu frame video gốc
     st.session_state.initialized = True
     st.sidebar.success("Tất cả các model và dữ liệu đã được tải.")
 
-# --- LỚP XỬ LÝ VIDEO THỜI GIAN THỰC CHO STREAMLIT-WEBRTC ---
-class VideoTransformer(VideoTransformerBase):
+# --- LỚP GHI HÌNH TỪ WEBCAM ---
+class VideoRecorder(VideoTransformerBase):
     def __init__(self):
-        self.threshold = 0.6
-        # SỬA LỖI: Khởi tạo bộ đệm tại đây một cách an toàn
-        st.session_state.frame_buffer = []
+        # Xóa bộ đệm cũ mỗi khi bắt đầu một luồng mới
+        st.session_state.raw_frame_buffer.clear()
 
     def recv(self, frame):
         # Chuyển frame thành ảnh OpenCV
         img = frame.to_ndarray(format="bgr24")
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # --- Xử lý với ResnetV1 (màu xanh lá) ---
-        boxes, _ = mtcnn.detect(img_rgb)
-        if boxes is not None:
-            for box in boxes:
-                face_tensor = mtcnn.extract(img_rgb, [box], save_path=None).to(device)
-                embedding = resnetv1(face_tensor).detach().cpu().numpy()[0]
-                name, sim = recognize_face(embedding, st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names, self.threshold)
-                x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(img, f'R: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        # --- Xử lý với ArcFace (màu xanh dương) ---
-        faces = arcface_app.get(img)
-        if len(faces) > 0:
-            for face in faces:
-                arc_embedding = face.embedding
-                name, sim = recognize_face(arc_embedding, st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names, self.threshold)
-                x1, y1, x2, y2 = face.bbox.astype(int)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(img, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-
-        # Lưu frame đã xử lý vào bộ đệm
-        st.session_state.frame_buffer.append(img)
+        # Lưu frame gốc (chưa xử lý) vào bộ đệm
+        st.session_state.raw_frame_buffer.append(img)
         
         # Trả về frame để hiển thị trực tiếp
         return img
@@ -153,45 +132,73 @@ with tab1:
 with tab2:
     st.header("Thử nghiệm Nhận diện")
     
-    demo_tab1, demo_tab2 = st.tabs(["📸 Webcam & Ghi hình", "🖼️ Phân tích Ảnh"])
+    demo_tab1, demo_tab2, demo_tab3 = st.tabs(["🔴 Ghi hình từ Webcam", "🎬 Phân tích Video đã ghi", "🖼️ Phân tích Ảnh"])
 
     # --- Demo qua Webcam & Ghi hình ---
     with demo_tab1:
-        st.info("Nhấn 'START' để bật webcam. Nhấn 'STOP' để dừng và tự động tạo video kết quả.")
-        
+        st.info("Nhấn 'START' để ghi lại video từ webcam. Nhấn 'STOP' để dừng.")
         ctx = webrtc_streamer(
-            key="realtime-recognition",
-            video_transformer_factory=VideoTransformer,
+            key="video-recorder",
+            video_transformer_factory=VideoRecorder,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
+        if not ctx.state.playing and len(st.session_state.raw_frame_buffer) > 0:
+            st.success(f"Đã ghi lại thành công một video gồm {len(st.session_state.raw_frame_buffer)} khung hình. Hãy chuyển sang tab 'Phân tích Video đã ghi' để xem kết quả.")
 
-        # Khối này sẽ chạy sau khi người dùng nhấn STOP
-        if not ctx.state.playing and 'frame_buffer' in st.session_state and len(st.session_state.frame_buffer) > 0:
-            st.subheader("Video đã ghi và phân tích")
-            with st.spinner("Đang tạo file video..."):
-                # Lấy thuộc tính từ frame đầu tiên
-                first_frame = st.session_state.frame_buffer[0]
-                h, w, _ = first_frame.shape
-                output_fps = 15.0  # FPS mặc định cho video đầu ra
+    # --- Demo phân tích video đã ghi ---
+    with demo_tab2:
+        if not st.session_state.raw_frame_buffer:
+            st.warning("Chưa có video nào được ghi. Vui lòng ghi một video ở tab 'Ghi hình từ Webcam' trước.")
+        else:
+            if st.button("Bắt đầu phân tích video đã ghi"):
+                st.subheader("Video kết quả")
+                with st.spinner("Đang phân tích video... Việc này có thể mất một lúc."):
+                    # Lấy thuộc tính từ frame đầu tiên
+                    first_frame = st.session_state.raw_frame_buffer[0]
+                    h, w, _ = first_frame.shape
+                    output_fps = 15.0
 
-                # Lưu vào một file tạm thời
-                output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
-                out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), output_fps, (w, h))
-                
-                for frame in st.session_state.frame_buffer:
-                    out.write(frame)
-                
-                out.release()
-                
-                # Hiển thị video và dọn dẹp
-                st.video(output_path)
-                os.unlink(output_path)
-                st.success("Video đã được xử lý và hiển thị ở trên.")
-                st.session_state.frame_buffer.clear() # Xóa bộ đệm sau khi đã xử lý
+                    # Lưu vào một file tạm thời
+                    output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+                    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), output_fps, (w, h))
+                    
+                    progress_bar = st.progress(0, text="Đang xử lý...")
+                    total_frames = len(st.session_state.raw_frame_buffer)
+
+                    for i, frame in enumerate(st.session_state.raw_frame_buffer):
+                        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        # Logic nhận diện
+                        boxes, _ = mtcnn.detect(img_rgb)
+                        if boxes is not None:
+                            for box in boxes:
+                                face_tensor = mtcnn.extract(img_rgb, [box], save_path=None).to(device)
+                                embedding = resnetv1(face_tensor).detach().cpu().numpy()[0]
+                                name, sim = recognize_face(embedding, st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names)
+                                x1, y1, x2, y2 = map(int, box)
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                cv2.putText(frame, f'R: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        
+                        faces = arcface_app.get(frame)
+                        if len(faces) > 0:
+                            for face in faces:
+                                arc_embedding = face.embedding
+                                name, sim = recognize_face(arc_embedding, st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names)
+                                x1, y1, x2, y2 = face.bbox.astype(int)
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                                cv2.putText(frame, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                        
+                        out.write(frame)
+                        progress_bar.progress((i + 1) / total_frames, text=f"Đang xử lý frame {i+1}/{total_frames}")
+
+                    out.release()
+                    progress_bar.empty()
+                    st.video(output_path)
+                    os.unlink(output_path)
+                    st.session_state.raw_frame_buffer.clear() # Xóa bộ đệm sau khi đã xử lý
 
     # --- Demo qua Ảnh tải lên ---
-    with demo_tab2:
+    with demo_tab3:
         # (Giữ nguyên nội dung phân tích ảnh)
         st.write("Tải lên một bức ảnh có chứa khuôn mặt để xem kết quả nhận diện từ cả hai mô hình.")
         uploaded_file = st.file_uploader("Chọn một file ảnh", type=["jpg", "jpeg", "png"], key="img_uploader")
