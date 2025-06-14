@@ -6,21 +6,18 @@ import os
 from PIL import Image
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
-import time
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
-import tempfile
 import io
-from collections import deque
 
 # --- CẤU HÌNH TRANG WEB ---
 st.set_page_config(
     page_title="So sánh Face Recognition Models",
-    page_icon="�",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # --- TẢI MODEL VÀ DỮ LIỆU (CACHE ĐỂ TĂNG TỐC) ---
+
 @st.cache_resource
 def load_all_models():
     """Tải tất cả các model AI một lần duy nhất."""
@@ -62,50 +59,12 @@ def recognize_face(embedding, known_embeddings, known_names, threshold=0.6):
 mtcnn, resnetv1, arcface_app, device = load_all_models()
 
 # --- SỬ DỤNG SESSION STATE ĐỂ LƯU TRỮ DỮ LIỆU ---
+# Điều này cho phép dữ liệu được cập nhật trong suốt phiên làm việc
 if 'initialized' not in st.session_state:
     st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names = load_known_face_data_from_file("facenet")
     st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names = load_known_face_data_from_file("arcface")
-    st.session_state.processed_frame_buffer = deque()
     st.session_state.initialized = True
     st.sidebar.success("Tất cả các model và dữ liệu đã được tải.")
-
-# --- LỚP XỬ LÝ VIDEO THỜI GIAN THỰC ---
-class VideoProcessor(VideoTransformerBase):
-    def __init__(self):
-        self.threshold = 0.6
-        # Luôn khởi tạo lại bộ đệm khi một phiên mới bắt đầu
-        st.session_state.processed_frame_buffer = deque()
-
-    def recv(self, frame):
-        # Chuyển frame thành ảnh OpenCV
-        img = frame.to_ndarray(format="bgr24")
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        # Thực hiện nhận diện và vẽ trực tiếp lên frame
-        boxes, _ = mtcnn.detect(img_rgb)
-        if boxes is not None:
-            for box in boxes:
-                face_tensor = mtcnn.extract(img_rgb, [box], save_path=None).to(device)
-                embedding = resnetv1(face_tensor).detach().cpu().numpy()[0]
-                name, sim = recognize_face(embedding, st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names, self.threshold)
-                x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(img, f'R: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        faces = arcface_app.get(img)
-        if len(faces) > 0:
-            for face in faces:
-                arc_embedding = face.embedding
-                name, sim = recognize_face(arc_embedding, st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names, self.threshold)
-                x1, y1, x2, y2 = face.bbox.astype(int)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(img, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-
-        # Lưu frame đã xử lý vào bộ đệm
-        st.session_state.processed_frame_buffer.append(img)
-        
-        # Trả về frame đã xử lý để hiển thị trực tiếp
-        return img
 
 # --- GIAO DIỆN THANH BÊN (SIDEBAR) ---
 with st.sidebar:
@@ -114,175 +73,172 @@ with st.sidebar:
     st.write("**Sinh viên thực hiện:** Thái")
     st.info("Chọn các tab bên dưới để xem chi tiết.")
     
-    st.subheader("Số người trong CSDL:")
+    st.subheader("Số người trong CSDL (phiên hiện tại):")
     st.write(f"**{len(np.unique(st.session_state.known_resnetv1_names))}** người")
 
+
 # --- NỘI DUNG CHÍNH ---
-st.title("Nhận diện khuôn mặt: So sánh ResNetV1 & ArcFace")
+st.title("Phân tích và So sánh các mô hình Nhận dạng Khuôn mặt")
 
 tab1, tab2, tab3, tab4 = st.tabs([
-    "So sánh Tổng quan", 
-    "Demo Trực tiếp",
-    "Quản lý Dữ liệu",
-    "Giới thiệu Dự án"
+    "📊 So sánh Tổng quan", 
+    "🖼️ Demo Nhận diện qua Ảnh",
+    "➕ Thêm Dữ liệu Nhận dạng",
+    "📝 Giới thiệu Dự án"
 ])
 
 # --- TAB 1: SO SÁNH TỔNG QUAN ---
 with tab1:
     st.header("So sánh Hiệu suất và Kiến trúc")
+    st.write("Phần này trình bày các kết quả so sánh định lượng giữa FaceNet (ResnetV1) và ArcFace (buffalo_l), được tạo ra bởi `cv.py`.")
+    
     st.subheader("1. Bảng so sánh Kiến trúc")
     try:
         df_arch = pd.read_csv("architecture_comparison.csv")
         st.dataframe(df_arch.style.format(precision=2), use_container_width=True)
     except FileNotFoundError:
         st.error("Không tìm thấy file `architecture_comparison.csv`.")
+
     st.subheader("2. Bảng so sánh trên Benchmark")
     try:
         df_benchmark = pd.read_csv("benchmark_comparison.csv")
         st.dataframe(df_benchmark.style.format(precision=2), use_container_width=True)
     except FileNotFoundError:
         st.error("Không tìm thấy file `benchmark_comparison.csv`.")
+            
     st.divider()
+    
     st.subheader("3. Biểu đồ So sánh Tổng hợp")
     if os.path.exists("comparison_charts_full.png"):
         st.image("comparison_charts_full.png", caption="Biểu đồ so sánh hiệu suất, kiến trúc và benchmark.")
     else:
         st.warning("Không tìm thấy file 'comparison_charts_full.png'.")
 
-# --- TAB 2: DEMO TRỰC TIẾP ---
+# --- TAB 2: DEMO NHẬN DIỆN QUA ẢNH ---
 with tab2:
-    st.header("Thử nghiệm Nhận diện")
-    
-    demo_tab1, demo_tab2 = st.tabs(["📸 Webcam Thời gian thực", "🖼️ Phân tích Ảnh"])
+    st.header("Thử nghiệm Nhận diện với ảnh của bạn")
+    st.write("Tải lên một bức ảnh có chứa khuôn mặt để xem kết quả nhận diện từ cả hai mô hình.")
 
-    # --- Demo qua Webcam ---
-    with demo_tab1:
-        st.info("Nhấn 'START' để nhận diện và ghi hình. Nhấn 'STOP' để dừng và xem lại video đã ghi.")
+    uploaded_file = st.file_uploader("Chọn một file ảnh", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file).convert('RGB')
+        frame_rgb = np.array(image)
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         
-        ctx = webrtc_streamer(
-            key="video-processor",
-            video_transformer_factory=VideoProcessor,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
-
-        # Sau khi nhấn STOP, khối này sẽ được thực thi
-        if not ctx.state.playing and 'processed_frame_buffer' in st.session_state and len(st.session_state.processed_frame_buffer) > 0:
-            st.subheader("Video đã ghi và phân tích")
-            with st.spinner("Đang tạo file video..."):
-                first_frame = st.session_state.processed_frame_buffer[0]
-                h, w, _ = first_frame.shape
-                output_fps = 15.0
-
-                output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
-                out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), output_fps, (w, h))
-                
-                for frame in st.session_state.processed_frame_buffer:
-                    out.write(frame)
-                
-                out.release()
-                
-                st.video(output_path)
-                os.unlink(output_path)
-                st.success("Video đã được xử lý và hiển thị ở trên.")
-                st.session_state.processed_frame_buffer.clear()
-
-    # --- Demo qua Ảnh tải lên ---
-    with demo_tab2:
-        st.write("Tải lên một bức ảnh có chứa khuôn mặt để xem kết quả nhận diện từ cả hai mô hình.")
-        uploaded_file = st.file_uploader("Chọn một file ảnh", type=["jpg", "jpeg", "png"], key="img_uploader")
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file).convert('RGB')
-            frame_rgb = np.array(image)
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        col1, col2 = st.columns(2)
+        with col1:
             st.image(image, caption='Ảnh gốc', use_column_width=True)
-            with st.spinner('Đang phân tích...'):
-                # (Logic xử lý ảnh giữ nguyên)
-                boxes, _ = mtcnn.detect(frame_rgb)
-                if boxes is not None:
-                    for box in boxes:
-                        face_tensor = mtcnn.extract(frame_rgb, [box], save_path=None).to(device)
-                        embedding = resnetv1(face_tensor).detach().cpu().numpy()[0]
-                        name, sim = recognize_face(embedding, st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names)
-                        x1, y1, x2, y2 = map(int, box)
-                        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame_bgr, f'R: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                faces = arcface_app.get(frame_bgr)
-                if len(faces) > 0:
-                    for face in faces:
-                        arc_embedding = face.embedding
-                        name, sim = recognize_face(arc_embedding, st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names)
-                        x1, y1, x2, y2 = face.bbox.astype(int)
-                        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                        cv2.putText(frame_bgr, f'A: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+        with st.spinner('Đang phân tích...'):
+            # Dùng dữ liệu từ session_state để nhận diện
+            boxes, _ = mtcnn.detect(frame_rgb)
+            if boxes is not None:
+                for box in boxes:
+                    face_tensor = mtcnn.extract(frame_rgb, [box], save_path=None).to(device)
+                    embedding = resnetv1(face_tensor).detach().cpu().numpy()[0]
+                    name, sim = recognize_face(embedding, st.session_state.known_resnetv1_embeddings, st.session_state.known_resnetv1_names)
+                    x1, y1, x2, y2 = map(int, box)
+                    cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame_bgr, f'ResnetV1: {name} ({sim:.2f})', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            faces = arcface_app.get(frame_bgr)
+            if len(faces) > 0:
+                for face in faces:
+                    arc_embedding = face.embedding
+                    name, sim = recognize_face(arc_embedding, st.session_state.known_arcface_embeddings, st.session_state.known_arcface_names)
+                    x1, y1, x2, y2 = face.bbox.astype(int)
+                    cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                    cv2.putText(frame_bgr, f'ArcFace: {name} ({sim:.2f})', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+        with col2:
             st.image(frame_bgr, caption='Kết quả Nhận diện', channels="BGR", use_column_width=True)
 
-# --- TAB 3: QUẢN LÝ DỮ LIỆU ---
+# --- TAB 3: THÊM DỮ LIỆU NHẬN DẠNG ---
 with tab3:
-    st.header("Quản lý Cơ sở dữ liệu Khuôn mặt")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Thêm người mới")
-        add_name = st.text_input("Nhập tên:", key="add_name_tab3")
-        add_uploaded_img = st.file_uploader("Tải ảnh khuôn mặt", type=["jpg", "jpeg", "png"], key="add_img_tab3")
-        if st.button("➕ Thêm"):
-            if add_uploaded_img and add_name.strip():
-                with st.spinner(f"Đang thêm {add_name}..."):
-                    img = Image.open(add_uploaded_img).convert("RGB")
-                    img_array = np.array(img)
-                    boxes, _ = mtcnn.detect(img_array)
+    st.header("Thêm dữ liệu người dùng mới")
+    st.info("Tải lên ảnh của một người để thêm vào cơ sở dữ liệu nhận dạng cho phiên làm việc hiện tại.")
+
+    person_name = st.text_input("Nhập tên người cần thêm (không dấu, không khoảng cách):")
+    uploaded_images = st.file_uploader(
+        "Tải lên một hoặc nhiều ảnh (rõ mặt)",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
+
+    if st.button("Xử lý và Thêm vào CSDL", key="add_face"):
+        if person_name and uploaded_images:
+            with st.spinner(f"Đang xử lý ảnh cho '{person_name}'..."):
+                for uploaded_file in uploaded_images:
+                    image = Image.open(uploaded_file).convert('RGB')
+                    frame_rgb = np.array(image)
+                    
+                    # Trích xuất embedding cho cả 2 model
+                    boxes, _ = mtcnn.detect(frame_rgb)
                     if boxes is not None:
-                        face_tensor = mtcnn.extract(img_array, [boxes[0]], save_path=None).to(device)
+                        # ResnetV1
+                        face_tensor = mtcnn.extract(frame_rgb, [boxes[0]], save_path=None).to(device)
                         resnetv1_emb = resnetv1(face_tensor).detach().cpu().numpy()[0]
                         st.session_state.known_resnetv1_embeddings.append(resnetv1_emb)
-                        st.session_state.known_resnetv1_names.append(add_name.strip())
-                        faces = arcface_app.get(cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
-                        if len(faces) > 0:
-                            arc_emb = faces[0].embedding
+                        st.session_state.known_resnetv1_names.append(person_name)
+                        
+                        # ArcFace
+                        faces_arc = arcface_app.get(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+                        if len(faces_arc) > 0:
+                            arc_emb = faces_arc[0].embedding
                             st.session_state.known_arcface_embeddings.append(arc_emb)
-                            st.session_state.known_arcface_names.append(add_name.strip())
-                            np.save('known_facenet_embeddings.npy', np.array(st.session_state.known_resnetv1_embeddings))
-                            np.save('known_facenet_names.npy', np.array(st.session_state.known_resnetv1_names))
-                            np.save('known_arcface_embeddings.npy', np.array(st.session_state.known_arcface_embeddings))
-                            np.save('known_arcface_names.npy', np.array(st.session_state.known_arcface_names))
-                            st.success(f"Đã thêm '{add_name.strip()}'.")
-                            st.rerun()
+                            st.session_state.known_arcface_names.append(person_name)
+                            st.write(f"✅ Đã xử lý thành công ảnh: {uploaded_file.name}")
                         else:
-                            st.warning("ArcFace không phát hiện được khuôn mặt.")
+                            st.warning(f"⚠️ ArcFace không tìm thấy mặt trong ảnh: {uploaded_file.name}")
                             st.session_state.known_resnetv1_embeddings.pop()
                             st.session_state.known_resnetv1_names.pop()
                     else:
-                        st.warning("Không phát hiện khuôn mặt.")
-            else:
-                st.warning("Vui lòng tải ảnh và nhập tên!")
+                        st.warning(f"⚠️ FaceNet không tìm thấy mặt trong ảnh: {uploaded_file.name}")
 
-    with col2:
-        st.subheader("Xoá người đã đăng ký")
-        if len(st.session_state.known_resnetv1_names) > 0:
-            unique_names = sorted(list(np.unique(st.session_state.known_resnetv1_names)))
-            to_delete = st.selectbox("Chọn tên để xoá", unique_names, key="delete_name", index=None, placeholder="Chọn một tên...")
-            if st.button("❌ Xoá") and to_delete:
-                new_resnet_emb, new_resnet_names = [], []
-                new_arcface_emb, new_arcface_names = [], []
-                for i, name in enumerate(st.session_state.known_resnetv1_names):
-                    if name != to_delete:
-                        new_resnet_emb.append(st.session_state.known_resnetv1_embeddings[i])
-                        new_resnet_names.append(name)
-                        new_arcface_emb.append(st.session_state.known_arcface_embeddings[i])
-                        new_arcface_names.append(name)
-                st.session_state.known_resnetv1_embeddings = new_resnet_emb
-                st.session_state.known_resnetv1_names = new_resnet_names
-                st.session_state.known_arcface_embeddings = new_arcface_emb
-                st.session_state.known_arcface_names = new_arcface_names
-                np.save('known_facenet_embeddings.npy', np.array(new_resnet_emb))
-                np.save('known_facenet_names.npy', np.array(new_resnet_names))
-                np.save('known_arcface_embeddings.npy', np.array(new_arcface_emb))
-                np.save('known_arcface_names.npy', np.array(new_arcface_names))
-                st.success(f"Đã xoá tất cả ảnh của '{to_delete}'.")
-                st.rerun()
+            st.success(f"Hoàn tất! Đã thêm '{person_name}' vào CSDL của phiên này. Kiểm tra lại số người ở thanh bên.")
         else:
-            st.write("Chưa có ai trong cơ sở dữ liệu.")
+            st.error("Vui lòng nhập tên và tải lên ít nhất một ảnh.")
 
+    st.divider()
+    st.subheader("Lưu lại dữ liệu vĩnh viễn")
+    st.warning("""
+    **Lưu ý:** Dữ liệu bạn vừa thêm chỉ tồn tại trong phiên làm việc này.
+    Để lưu vĩnh viễn, hãy nhấn các nút bên dưới để tải các file dữ liệu (.npy) đã cập nhật về máy, sau đó cam kết và đẩy chúng lên lại repository GitHub của bạn.
+    """)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        # Chuyển list thành numpy array rồi thành bytes
+        out_resnet_emb = io.BytesIO()
+        np.save(out_resnet_emb, np.array(st.session_state.known_resnetv1_embeddings))
+        st.download_button(
+            label="Tải về `known_facenet_embeddings.npy`",
+            data=out_resnet_emb.getvalue(),
+            file_name="known_facenet_embeddings.npy"
+        )
+        out_arcface_emb = io.BytesIO()
+        np.save(out_arcface_emb, np.array(st.session_state.known_arcface_embeddings))
+        st.download_button(
+            label="Tải về `known_arcface_embeddings.npy`",
+            data=out_arcface_emb.getvalue(),
+            file_name="known_arcface_embeddings.npy"
+        )
+    with col2:
+        out_resnet_names = io.BytesIO()
+        np.save(out_resnet_names, np.array(st.session_state.known_resnetv1_names))
+        st.download_button(
+            label="Tải về `known_facenet_names.npy`",
+            data=out_resnet_names.getvalue(),
+            file_name="known_facenet_names.npy"
+        )
+        out_arcface_names = io.BytesIO()
+        np.save(out_arcface_names, np.array(st.session_state.known_arcface_names))
+        st.download_button(
+            label="Tải về `known_arcface_names.npy`",
+            data=out_arcface_names.getvalue(),
+            file_name="known_arcface_names.npy"
+        )
 # --- TAB 4: GIỚI THIỆU DỰ ÁN ---
 with tab4:
     st.header("Mục tiêu và Phương pháp")
@@ -294,8 +250,7 @@ with tab4:
     1.  **Hiệu suất trên các bộ dữ liệu benchmark chuẩn.**
     2.  **Đặc điểm kiến trúc (Số tham số, FLOPs).**
     3.  **Hiệu suất trong thời gian thực (FPS, Độ ổn định).**
-    4.  **Thử nghiệm định tính qua ảnh người dùng tải lên và webcam.**
+    4.  **Thử nghiệm định tính qua ảnh người dùng tải lên.**
     
     Toàn bộ ứng dụng demo này được xây dựng bằng **Streamlit**.
     """)
-
